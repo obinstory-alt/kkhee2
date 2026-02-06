@@ -40,6 +40,14 @@ import { INITIAL_PLATFORMS, INITIAL_MENUS, STORAGE_KEYS } from './constants';
 
 declare const XLSX: any;
 
+// ID 생성기 폴백 (crypto.randomUUID가 없는 환경 대응)
+const generateId = () => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+};
+
 const App: React.FC = () => {
   const [view, setView] = useState<ViewType>('HOME');
   const [reports, setReports] = useState<DailyReport[]>([]);
@@ -62,12 +70,17 @@ const App: React.FC = () => {
     items.forEach((item: any) => {
       try {
         if (!item || typeof item !== 'object') return;
+        
+        // 표준 포맷 확인
         if (item.entries && Array.isArray(item.entries) && item.date) {
           results.push(item);
           return;
         }
+
+        // 레거시 포맷 매핑
         const rawDate = item.date || item.dt || item.d || item.s_date || item.sale_date || item.created_at || item.timestamp || item.day;
         if (!rawDate) return;
+
         let formattedDate: string;
         try {
           if (typeof rawDate === 'string') {
@@ -77,16 +90,19 @@ const App: React.FC = () => {
             formattedDate = new Date(rawDate).toISOString().split('T')[0];
           }
         } catch { return; }
+
         const rawAmount = item.totalAmount ?? item.amount ?? item.amt ?? item.sum ?? item.price ?? item.total_price ?? item.val ?? item.sales ?? 0;
         const rawCount = item.totalCount ?? item.count ?? item.cnt ?? item.qty ?? item.quantity ?? item.orders ?? 1;
+        
         let rawPlatform = (item.platform || item.plat || item.type || item.platform_name || item.p_type || 'STORE').toString().toUpperCase();
         if (rawPlatform.includes('BAEMIN') || rawPlatform.includes('배달')) rawPlatform = 'BAEMIN';
         else if (rawPlatform.includes('COUPANG') || rawPlatform.includes('쿠팡')) rawPlatform = 'COUPANG';
         else if (rawPlatform.includes('YOGIYO') || rawPlatform.includes('요기')) rawPlatform = 'YOGIYO';
         else if (rawPlatform.includes('NAVER') || rawPlatform.includes('네이버')) rawPlatform = 'NAVER';
         else rawPlatform = 'STORE';
+
         results.push({
-          id: item.id || crypto.randomUUID(),
+          id: item.id || generateId(),
           date: formattedDate,
           entries: [{
             platform: rawPlatform as PlatformType,
@@ -101,7 +117,7 @@ const App: React.FC = () => {
           memo: item.memo || item.note || `Restored from ${sourceName}`,
           createdAt: item.createdAt || Date.now()
         });
-      } catch (e) { console.warn(e); }
+      } catch (e) { console.warn("Parse error:", e); }
     });
     return results;
   }, []);
@@ -109,10 +125,14 @@ const App: React.FC = () => {
   const scanAndConsolidate = useCallback((manual = false) => {
     setIsScanning(true);
     let consolidated: DailyReport[] = [];
+    
+    // 1. 현재 데이터 로드
     const currentData = localStorage.getItem(STORAGE_KEYS.REPORTS);
     if (currentData) {
       try { consolidated = JSON.parse(currentData); } catch(e) { console.error(e); }
     }
+
+    // 2. 전체 스토리지 스캔
     const keys = Object.keys(localStorage);
     keys.forEach(key => {
         if (key === STORAGE_KEYS.REPORTS) return;
@@ -120,37 +140,47 @@ const App: React.FC = () => {
         if (!data) return;
         try {
             const parsed = JSON.parse(data);
-            if (parsed && (Array.isArray(parsed) || typeof parsed === 'object')) {
+            if (parsed) {
                 const restored = resilientParse(parsed, key);
                 consolidated = [...consolidated, ...restored];
             }
         } catch (e) {}
     });
+
+    // 3. 중복 제거 및 정렬
     const uniqueReports = Array.from(new Map(consolidated.map(r => [r.id, r])).values())
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
     setReports(uniqueReports);
     localStorage.setItem(STORAGE_KEYS.REPORTS, JSON.stringify(uniqueReports));
     setIsScanning(false);
-    if (manual) alert(`스캔 완료: 총 ${uniqueReports.length}건을 통합했습니다.`);
+    if (manual) alert(`스캔 완료: 총 ${uniqueReports.length}건의 데이터를 통합했습니다.`);
   }, [resilientParse]);
 
   useEffect(() => {
-    const loadConfig = () => {
-      const savedMenus = localStorage.getItem(STORAGE_KEYS.CONFIG_MENUS);
-      const savedConfigs = localStorage.getItem(STORAGE_KEYS.CONFIG_PLATFORMS);
-      const savedDraft = localStorage.getItem(STORAGE_KEYS.DRAFT);
-      if (savedMenus) setCustomMenus(JSON.parse(savedMenus));
-      if (savedConfigs) setPlatformConfigs(JSON.parse(savedConfigs));
-      if (savedDraft) {
-        const parsed = JSON.parse(savedDraft);
-        setDraftEntries(parsed.entries || []);
-        setDraftMemo(parsed.memo || '');
-        setDraftDate(parsed.date || new Date().toISOString().split('T')[0]);
+    const initApp = async () => {
+      try {
+        const savedMenus = localStorage.getItem(STORAGE_KEYS.CONFIG_MENUS);
+        const savedConfigs = localStorage.getItem(STORAGE_KEYS.CONFIG_PLATFORMS);
+        const savedDraft = localStorage.getItem(STORAGE_KEYS.DRAFT);
+
+        if (savedMenus) setCustomMenus(JSON.parse(savedMenus));
+        if (savedConfigs) setPlatformConfigs(JSON.parse(savedConfigs));
+        if (savedDraft) {
+          const parsed = JSON.parse(savedDraft);
+          setDraftEntries(parsed.entries || []);
+          setDraftMemo(parsed.memo || '');
+          setDraftDate(parsed.date || new Date().toISOString().split('T')[0]);
+        }
+        
+        scanAndConsolidate();
+      } catch (e) {
+        console.error("Initialization error:", e);
+      } finally {
+        setLoading(false);
       }
     };
-    loadConfig();
-    scanAndConsolidate();
-    setLoading(false);
+    initApp();
   }, [scanAndConsolidate]);
 
   const saveReports = (newReports: DailyReport[]) => {
@@ -173,6 +203,7 @@ const App: React.FC = () => {
       const d = new Date(r.date);
       return d.getMonth() === curMonth && d.getFullYear() === curYear;
     }).reduce((sum, r) => sum + r.totalAmount, 0);
+
     const prevMonth = curMonth === 0 ? 11 : curMonth - 1;
     const prevYear = curMonth === 0 ? curYear - 1 : curYear;
     const prevMonthSales = reports.filter(r => {
@@ -182,7 +213,7 @@ const App: React.FC = () => {
     return { curMonthSales, prevMonthSales };
   }, [reports]);
 
-  // --- Statistics Logic (Updated for Requirements) ---
+  // --- Statistics Logic (요구사항 반영) ---
   const [statsPeriod, setStatsPeriod] = useState<StatsPeriod>('DAILY');
   const [statsViewType, setStatsViewType] = useState<'LIST' | 'CHART'>('LIST');
 
@@ -207,11 +238,12 @@ const App: React.FC = () => {
       const cur = groups.get(key) || { amount: 0, count: 0 };
       groups.set(key, { amount: cur.amount + r.totalAmount, count: cur.count + r.totalCount });
     });
-    return Array.from(groups.entries()).map(([period, data]) => ({ period, ...data }))
+    return Array.from(groups.entries())
+      .map(([period, data]) => ({ period, ...data }))
       .sort((a, b) => b.period.localeCompare(a.period));
   }, [reports, statsPeriod]);
 
-  // 요구사항 3, 4: 메뉴별, 플랫폼별 상세 통계
+  // 메뉴별, 플랫폼별 상세 합계 계산
   const detailedAggregates = useMemo(() => {
     const platformMap = new Map<PlatformType, { amount: number, count: number }>();
     const menuMap = new Map<string, { amount: number, count: number }>();
@@ -220,12 +252,14 @@ const App: React.FC = () => {
       r.entries.forEach(e => {
         const p = platformMap.get(e.platform) || { amount: 0, count: 0 };
         platformMap.set(e.platform, { amount: p.amount + e.platformTotalAmount, count: p.count + e.platformTotalCount });
+        
         e.menuSales.forEach(ms => {
           const m = menuMap.get(ms.menuName) || { amount: 0, count: 0 };
           menuMap.set(ms.menuName, { amount: m.amount + ms.amount, count: m.count + ms.count });
         });
       });
     });
+
     return {
       platforms: Array.from(platformMap.entries()).sort((a, b) => b[1].amount - a[1].amount),
       menus: Array.from(menuMap.entries()).sort((a, b) => b[1].amount - a[1].amount)
@@ -248,8 +282,9 @@ const App: React.FC = () => {
     if (draftEntries.length === 0) return alert("데이터가 없습니다.");
     const totalAmount = draftEntries.reduce((sum, e) => sum + e.platformTotalAmount, 0);
     const totalCount = draftEntries.reduce((sum, e) => sum + e.platformTotalCount, 0);
+    
     const newReport: DailyReport = {
-      id: crypto.randomUUID(),
+      id: generateId(),
       date: draftDate,
       entries: [...draftEntries],
       totalAmount,
@@ -261,6 +296,7 @@ const App: React.FC = () => {
     setDraftEntries([]);
     setDraftMemo('');
     setView('HOME');
+    alert("정산이 마감되었습니다.");
   };
 
   const importData = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -271,16 +307,21 @@ const App: React.FC = () => {
       try {
         const data = JSON.parse(event.target?.result as string);
         const imported = resilientParse(data.reports || data, file.name);
-        const unique = Array.from(new Map([...reports, ...imported].map(r => [r.id, r])).values())
+        const combined = Array.from(new Map([...reports, ...imported].map(r => [r.id, r])).values())
           .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-        saveReports(unique);
+        saveReports(combined);
         alert(`복원 완료: ${imported.length}건`);
-      } catch (e) { alert('실패'); }
+      } catch (e) { alert('파일 형식이 올바르지 않습니다.'); }
     };
     reader.readAsText(file);
   };
 
-  if (loading) return <div className="h-screen flex items-center justify-center text-white/20 font-bold">LOADING...</div>;
+  if (loading) return (
+    <div className="h-screen flex flex-col items-center justify-center bg-black gap-4">
+      <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
+      <div className="text-white/40 font-bold tracking-widest text-sm">시스템 초기화 중...</div>
+    </div>
+  );
 
   return (
     <div className="flex h-screen overflow-hidden bg-black text-white selection:bg-blue-500/30">
@@ -335,7 +376,7 @@ const App: React.FC = () => {
                         </tr>
                       ))}
                       {reports.length === 0 && (
-                        <tr><td colSpan={3} className="p-12 text-center text-white/20 italic">데이터가 없습니다.</td></tr>
+                        <tr><td colSpan={3} className="p-12 text-center text-white/20 italic">입력된 매출 데이터가 없습니다.</td></tr>
                       )}
                     </tbody>
                   </table>
@@ -374,9 +415,9 @@ const App: React.FC = () => {
                 )}
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-white/40 ml-1">특이사항 메모</label>
-                  <textarea value={draftMemo} onChange={e => setDraftMemo(e.target.value)} placeholder="오늘의 특이사항..." className="w-full glass rounded-2xl p-4 text-sm h-24 resize-none focus:outline-none focus:border-blue-500" />
+                  <textarea value={draftMemo} onChange={e => setDraftMemo(e.target.value)} placeholder="오늘의 특이사항을 기록하세요..." className="w-full glass rounded-2xl p-4 text-sm h-24 resize-none focus:outline-none focus:border-blue-500" />
                 </div>
-                <button onClick={finalizeDailySettlement} disabled={draftEntries.length === 0} className="w-full bg-blue-600 py-4 rounded-2xl font-bold text-lg hover:bg-blue-500 disabled:opacity-20 transition-all shadow-lg shadow-blue-600/20">오늘 정산 마감하기</button>
+                <button onClick={finalizeDailySettlement} disabled={draftEntries.length === 0} className="w-full bg-blue-600 py-4 rounded-2xl font-bold text-lg hover:bg-blue-500 disabled:opacity-20 transition-all shadow-lg shadow-blue-600/20 active:scale-[0.98]">오늘 정산 마감하기</button>
               </div>
             </div>
           )}
@@ -392,7 +433,7 @@ const App: React.FC = () => {
                 </div>
               </header>
 
-              {/* 요구사항 1: 먼지 기준 (일별, 주별, 월별, 연별) */}
+              {/* 기준 선택 (일/주/월/연) */}
               <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
                 {(['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'] as StatsPeriod[]).map(p => (
                   <button 
@@ -407,7 +448,7 @@ const App: React.FC = () => {
 
               {statsViewType === 'LIST' ? (
                 <div className="space-y-10">
-                  {/* 요구사항 2: 매출현황과 주문건수 (기간별) */}
+                  {/* 매출현황과 주문건수 */}
                   <section className="space-y-4">
                     <h2 className="text-sm font-bold text-white/40 px-1 flex items-center gap-2"><TrendingUp className="w-4 h-4 text-blue-500" /> 기간별 매출 및 주문 요약</h2>
                     <div className="glass apple-card overflow-hidden">
@@ -435,24 +476,24 @@ const App: React.FC = () => {
                     </div>
                   </section>
 
-                  {/* 요구사항 4: 플랫폼별 매출과 주문건수 */}
+                  {/* 플랫폼별 통계 */}
                   <section className="space-y-4">
-                    <h2 className="text-sm font-bold text-white/40 px-1 flex items-center gap-2"><ShoppingBag className="w-4 h-4 text-emerald-500" /> 플랫폼별 매출 기여도</h2>
+                    <h2 className="text-sm font-bold text-white/40 px-1 flex items-center gap-2"><ShoppingBag className="w-4 h-4 text-emerald-500" /> 플랫폼별 실적 분석</h2>
                     <div className="glass apple-card overflow-hidden">
                       <table className="w-full text-sm">
                         <thead className="bg-white/5 border-b border-white/5">
                           <tr>
                             <th className="p-4 text-left text-white/40">플랫폼</th>
-                            <th className="p-4 text-right text-white/40">누적 매출</th>
-                            <th className="p-4 text-right text-white/40">누적 주문</th>
+                            <th className="p-4 text-right text-white/40">매출 합계</th>
+                            <th className="p-4 text-right text-white/40">주문 합계</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-white/5">
                           {detailedAggregates.platforms.map(([id, data]) => (
                             <tr key={id} className="hover:bg-white/5 transition-colors">
                               <td className="p-4 flex items-center gap-3">
-                                <div className="w-2.5 h-2.5 rounded-full" style={{background: platformConfigs[id].color}} />
-                                <span className="font-semibold">{platformConfigs[id].name}</span>
+                                <div className="w-2.5 h-2.5 rounded-full" style={{background: platformConfigs[id]?.color || '#fff'}} />
+                                <span className="font-semibold">{platformConfigs[id]?.name || id}</span>
                               </td>
                               <td className="p-4 text-right font-bold">{data.amount.toLocaleString()}원</td>
                               <td className="p-4 text-right text-white/40">{data.count.toLocaleString()}건</td>
@@ -463,9 +504,9 @@ const App: React.FC = () => {
                     </div>
                   </section>
 
-                  {/* 요구사항 3: 메뉴별 매출과 주문건수 (플랫폼 합계) */}
+                  {/* 메뉴별 통계 (플랫폼 합계) */}
                   <section className="space-y-4">
-                    <h2 className="text-sm font-bold text-white/40 px-1 flex items-center gap-2"><Tag className="w-4 h-4 text-amber-500" /> 메뉴별 누적 판매 순위 (전체 합계)</h2>
+                    <h2 className="text-sm font-bold text-white/40 px-1 flex items-center gap-2"><Tag className="w-4 h-4 text-amber-500" /> 메뉴별 판매 성과 (전체 플랫폼 합계)</h2>
                     <div className="glass apple-card overflow-hidden">
                       <table className="w-full text-sm">
                         <thead className="bg-white/5 border-b border-white/5">
@@ -522,10 +563,6 @@ const App: React.FC = () => {
                    </div>
                 </div>
               )}
-
-              <button className="w-full glass py-5 rounded-[24px] flex items-center justify-center gap-3 text-white/60 hover:text-white transition-all hover:bg-white/10">
-                <FileSpreadsheet className="w-5 h-5 text-emerald-500" /> 전체 통계 데이터 엑셀 추출
-              </button>
             </div>
           )}
 
@@ -538,15 +575,15 @@ const App: React.FC = () => {
                 <div className="glass apple-card p-6 space-y-4">
                   <div className="flex items-center justify-between gap-4">
                     <div className="flex-1">
-                       <p className="font-bold">하이퍼 데이터 스캔 엔진</p>
-                       <p className="text-xs text-white/40 mt-1">로컬 스토리지의 모든 파편화된 과거 장부 데이터를 검색하여 v26으로 통합합니다.</p>
+                       <p className="font-bold text-sm">하이퍼 데이터 스캔 엔진</p>
+                       <p className="text-[11px] text-white/40 mt-1">로컬 스토리지의 모든 파편화된 과거 장부 데이터를 검색하여 v26으로 통합합니다.</p>
                     </div>
                     <button onClick={() => scanAndConsolidate(true)} className="bg-blue-600 px-5 py-3 rounded-xl font-bold text-sm flex items-center gap-2 hover:bg-blue-500 active:scale-95 transition-all">
                       <ShieldCheck className="w-4 h-4" /> 정밀 스캔
                     </button>
                   </div>
                   <div className="pt-4 border-t border-white/5">
-                    <label className="w-full glass py-4 rounded-xl flex items-center justify-center gap-2 font-bold cursor-pointer hover:bg-white/10 transition-all border-dashed border-white/20">
+                    <label className="w-full glass py-4 rounded-xl flex items-center justify-center gap-2 font-bold cursor-pointer hover:bg-white/10 transition-all border-dashed border-white/20 text-sm">
                       <FileJson className="w-5 h-5 text-emerald-500" /> 외부 JSON 백업 파일 복원
                       <input type="file" className="hidden" accept=".json" onChange={importData} />
                     </label>
@@ -571,7 +608,7 @@ const App: React.FC = () => {
                             setPlatformConfigs(next);
                             localStorage.setItem(STORAGE_KEYS.CONFIG_PLATFORMS, JSON.stringify(next));
                           }} 
-                          className="w-20 text-right font-bold text-blue-400" 
+                          className="w-20 text-right font-bold text-blue-400 bg-transparent" 
                         /> 
                         <span className="text-xs text-white/40 font-bold">%</span>
                       </div>
@@ -580,7 +617,7 @@ const App: React.FC = () => {
                 </div>
               </section>
 
-              <button onClick={() => { if(confirm('모든 장부 데이터를 영구 삭제하시겠습니까?')) saveReports([]); }} className="w-full glass py-4 rounded-2xl text-rose-500 font-bold hover:bg-rose-500/10 transition-all">전체 데이터 초기화</button>
+              <button onClick={() => { if(confirm('모든 장부 데이터를 영구 삭제하시겠습니까?')) { saveReports([]); alert('초기화되었습니다.'); } }} className="w-full glass py-4 rounded-2xl text-rose-500 font-bold hover:bg-rose-500/10 transition-all">전체 데이터 초기화</button>
             </div>
           )}
         </div>
@@ -613,7 +650,7 @@ const MetricCard: React.FC<{ label: string, value: string, icon: any, color: str
 );
 
 const NavBtn: React.FC<{ icon: any, label: string, active: boolean, onClick: () => void }> = ({ icon: Icon, label, active, onClick }) => (
-  <button onClick={onClick} className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl transition-all ${active ? 'bg-white/10 text-white' : 'text-white/30 hover:text-white hover:bg-white/5'}`}>
+  <button onClick={onClick} className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl transition-all ${active ? 'bg-white/10 text-white shadow-inner shadow-white/5' : 'text-white/30 hover:text-white hover:bg-white/5'}`}>
     <Icon className={`w-5 h-5 ${active ? 'text-blue-500' : ''}`} />
     <span className="font-semibold text-sm">{label}</span>
   </button>
@@ -653,7 +690,8 @@ const PlatformInputSection: React.FC<{
 
     const amount = sales.reduce((s, x) => s + x.amount, 0);
     const count = sales.reduce((s, x) => s + x.count, 0);
-    const fee = Math.floor(amount * configs[sel].feeRate);
+    const fee = Math.floor(amount * (configs[sel]?.feeRate || 0));
+    
     onAddEntry({ 
       platform: sel, 
       menuSales: sales, 
@@ -662,7 +700,7 @@ const PlatformInputSection: React.FC<{
       feeAmount: fee, 
       settlementAmount: amount - fee 
     });
-    alert(`${configs[sel].name} 데이터가 임시 저장되었습니다.`);
+    alert(`${configs[sel]?.name || sel} 데이터가 저장되었습니다.`);
   };
 
   return (
@@ -674,14 +712,13 @@ const PlatformInputSection: React.FC<{
             onClick={() => setSel(pt)} 
             className={`px-4 py-2.5 rounded-xl text-xs font-bold whitespace-nowrap border transition-all ${sel === pt ? 'bg-white/10 border-blue-500/50 text-white ring-1 ring-blue-500/20' : 'glass border-white/5 text-white/30 hover:text-white'}`}
           >
-            {configs[pt].name} {existingEntries.some(e => e.platform === pt) && '✓'}
+            {configs[pt]?.name || pt} {existingEntries.some(e => e.platform === pt) && '✓'}
           </button>
         ))}
       </div>
       <div className="space-y-4 glass p-5 rounded-3xl border-white/5 bg-white/5">
         <div className="flex items-center justify-between px-1">
-          <p className="text-xs font-bold text-blue-400">{configs[sel].name} 메뉴별 입력</p>
-          <p className="text-[10px] text-white/20">데이터 자동 저장 안됨 → 하단 저장 필수</p>
+          <p className="text-xs font-bold text-blue-400">{configs[sel]?.name || sel} 메뉴별 입력</p>
         </div>
         <div className="space-y-2">
           {menus.map(m => (
@@ -690,7 +727,7 @@ const PlatformInputSection: React.FC<{
               <input 
                 type="number" 
                 placeholder="건수" 
-                className="col-span-3 text-center text-xs py-2.5" 
+                className="col-span-3 text-center text-xs py-2.5 bg-white/5 border-white/10 rounded-xl" 
                 value={data[m]?.count || ''} 
                 onChange={e => setData({...data, [m]: {...(data[m] || {amount:''}), count: e.target.value}})} 
               />
@@ -698,7 +735,7 @@ const PlatformInputSection: React.FC<{
                 <input 
                   type="number" 
                   placeholder="금액" 
-                  className="w-full text-right pr-6 text-xs py-2.5" 
+                  className="w-full text-right pr-6 text-xs py-2.5 bg-white/5 border-white/10 rounded-xl" 
                   value={data[m]?.amount || ''} 
                   onChange={e => setData({...data, [m]: {...(data[m] || {count:''}), amount: e.target.value}})} 
                 />
@@ -709,9 +746,9 @@ const PlatformInputSection: React.FC<{
         </div>
         <button 
           onClick={handleSave} 
-          className="w-full mt-2 py-3.5 bg-white/10 rounded-2xl text-xs font-bold hover:bg-white/20 transition-all border border-white/10 flex items-center justify-center gap-2"
+          className="w-full mt-2 py-3.5 bg-white/10 rounded-2xl text-xs font-bold hover:bg-white/20 transition-all border border-white/10 flex items-center justify-center gap-2 active:scale-[0.98]"
         >
-          <Save className="w-3.5 h-3.5 text-blue-500" /> {configs[sel].name} 플랫폼 임시 저장
+          <Save className="w-3.5 h-3.5 text-blue-500" /> {configs[sel]?.name || sel} 플랫폼 저장
         </button>
       </div>
     </div>
