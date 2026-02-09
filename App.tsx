@@ -56,6 +56,7 @@ const App: React.FC = () => {
   const [draftEntries, setDraftEntries] = useState<PlatformDailyEntry[]>([]);
   const [draftMemo, setDraftMemo] = useState('');
   const [draftDate, setDraftDate] = useState(new Date().toISOString().split('T')[0]);
+  const [editingReportId, setEditingReportId] = useState<string | null>(null);
   
   const [loading, setLoading] = useState(true);
   const [isScanning, setIsScanning] = useState(false);
@@ -183,6 +184,23 @@ const App: React.FC = () => {
     localStorage.setItem(STORAGE_KEYS.REPORTS, JSON.stringify(newReports));
   };
 
+  // --- 데이터 수정 핸들러 ---
+  const handleEditReport = (report: DailyReport) => {
+    setDraftDate(report.date);
+    setDraftEntries([...report.entries]);
+    setDraftMemo(report.memo);
+    setEditingReportId(report.id);
+    setView('INPUT');
+  };
+
+  const cancelEdit = () => {
+    setDraftEntries([]);
+    setDraftMemo('');
+    setDraftDate(new Date().toISOString().split('T')[0]);
+    setEditingReportId(null);
+    setView('HOME');
+  };
+
   // --- Home Metrics (안전한 계산) ---
   const homeMetrics = useMemo(() => {
     const now = new Date();
@@ -285,21 +303,38 @@ const App: React.FC = () => {
     const totalAmount = draftEntries.reduce((sum, e) => sum + e.platformTotalAmount, 0);
     const totalCount = draftEntries.reduce((sum, e) => sum + e.platformTotalCount, 0);
     
-    const newReport: DailyReport = {
-      id: generateId(),
-      date: draftDate,
-      entries: [...draftEntries],
-      totalAmount,
-      totalCount,
-      memo: draftMemo,
-      createdAt: Date.now()
-    };
-    saveReports([newReport, ...reports]);
+    if (editingReportId) {
+      // 기존 데이터 수정
+      const updatedReports = reports.map(r => r.id === editingReportId ? {
+        ...r,
+        date: draftDate,
+        entries: [...draftEntries],
+        totalAmount,
+        totalCount,
+        memo: draftMemo
+      } : r);
+      saveReports(updatedReports);
+      setEditingReportId(null);
+      alert("장부 수정이 완료되었습니다.");
+    } else {
+      // 새 데이터 추가
+      const newReport: DailyReport = {
+        id: generateId(),
+        date: draftDate,
+        entries: [...draftEntries],
+        totalAmount,
+        totalCount,
+        memo: draftMemo,
+        createdAt: Date.now()
+      };
+      saveReports([newReport, ...reports]);
+      alert("오늘 장부가 마감되었습니다.");
+    }
+    
     setDraftEntries([]);
     setDraftMemo('');
-    setDraftDate(new Date().toISOString().split('T')[0]); // 정산 후 오늘 날짜로 리셋
+    setDraftDate(new Date().toISOString().split('T')[0]); // 오늘 날짜로 자동 리셋
     setView('HOME');
-    alert("오늘 장부가 마감되었습니다.");
   };
 
   const importData = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -336,10 +371,10 @@ const App: React.FC = () => {
           경희장부 <span className="text-[10px] bg-white/10 px-1.5 py-0.5 rounded ml-2">v26.0</span>
         </div>
         <div className="flex-1 space-y-1">
-          <NavBtn icon={HomeIcon} label="홈" active={view === 'HOME'} onClick={() => setView('HOME')} />
+          <NavBtn icon={HomeIcon} label="홈" active={view === 'HOME'} onClick={() => { setEditingReportId(null); setView('HOME'); }} />
           <NavBtn icon={PlusCircle} label="기록하기" active={view === 'INPUT'} onClick={() => setView('INPUT')} />
-          <NavBtn icon={BarChart3} label="통계 분석" active={view === 'STATS'} onClick={() => setView('STATS')} />
-          <NavBtn icon={SettingsIcon} label="설정" active={view === 'SETTINGS'} onClick={() => setView('SETTINGS')} />
+          <NavBtn icon={BarChart3} label="통계 분석" active={view === 'STATS'} onClick={() => { setEditingReportId(null); setView('STATS'); }} />
+          <NavBtn icon={SettingsIcon} label="설정" active={view === 'SETTINGS'} onClick={() => { setEditingReportId(null); setView('SETTINGS'); }} />
         </div>
       </nav>
 
@@ -371,9 +406,14 @@ const App: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/5">
-                      {reports.slice(0, 5).map(r => (
-                        <tr key={r.id} className="hover:bg-white/5 transition-colors">
-                          <td className="py-4 px-4 text-white/80">{r.date}</td>
+                      {reports.slice(0, 10).map(r => (
+                        <tr key={r.id} className="hover:bg-white/5 transition-colors group">
+                          <td 
+                            onClick={() => handleEditReport(r)} 
+                            className="py-4 px-4 text-blue-400 font-medium cursor-pointer hover:underline flex items-center gap-2"
+                          >
+                            {r.date} <ChevronRight className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity" />
+                          </td>
                           <td className="py-4 px-4 text-right font-bold">{(Number(r.totalAmount) || 0).toLocaleString()}원</td>
                           <td className="py-4 px-4 text-right text-white/40">{(Number(r.totalCount) || 0).toLocaleString()}건</td>
                         </tr>
@@ -390,7 +430,7 @@ const App: React.FC = () => {
 
           {view === 'INPUT' && (
             <div className="space-y-8 animate-in slide-in-from-bottom-4 duration-500">
-              <h1 className="text-3xl font-bold">일정산 마감</h1>
+              <h1 className="text-3xl font-bold">{editingReportId ? '장부 내역 수정' : '일정산 마감'}</h1>
               <div className="glass apple-card p-6 space-y-6">
                 <div className="space-y-1">
                   <label className="text-xs font-bold text-white/40 ml-1">정산 날짜</label>
@@ -406,7 +446,14 @@ const App: React.FC = () => {
                   <label className="text-xs font-bold text-white/40 ml-1">특이사항 메모</label>
                   <textarea value={draftMemo} onChange={e => setDraftMemo(e.target.value)} placeholder="날씨, 특이사항 등..." className="w-full glass rounded-2xl p-4 text-sm h-24 resize-none focus:outline-none focus:border-blue-500" />
                 </div>
-                <button onClick={finalizeDailySettlement} disabled={draftEntries.length === 0} className="w-full bg-blue-600 py-4 rounded-2xl font-bold text-lg hover:bg-blue-500 disabled:opacity-20 transition-all active:scale-[0.98]">오늘 정산 마감</button>
+                <div className="flex gap-3">
+                  {editingReportId && (
+                    <button onClick={cancelEdit} className="flex-1 glass py-4 rounded-2xl font-bold text-lg hover:bg-white/10 active:scale-[0.98] transition-all">취소</button>
+                  )}
+                  <button onClick={finalizeDailySettlement} disabled={draftEntries.length === 0} className="flex-[2] bg-blue-600 py-4 rounded-2xl font-bold text-lg hover:bg-blue-500 disabled:opacity-20 transition-all active:scale-[0.98]">
+                    {editingReportId ? '수정 내용 저장' : '오늘 정산 마감'}
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -421,7 +468,7 @@ const App: React.FC = () => {
                 </div>
               </header>
 
-              {/* 메모 검색바 추가 */}
+              {/* 메모 검색바 */}
               <div className="relative">
                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-white/20" />
                 <input 
@@ -457,8 +504,18 @@ const App: React.FC = () => {
                         </thead>
                         <tbody className="divide-y divide-white/5">
                           {groupedStats.map(s => (
-                            <tr key={s.period} className="hover:bg-white/5">
-                              <td className="p-4 font-medium">{s.period}</td>
+                            <tr key={s.period} className="hover:bg-white/5 group">
+                              <td 
+                                onClick={() => {
+                                  if (statsPeriod === 'DAILY') {
+                                    const report = reports.find(r => r.date === s.period);
+                                    if (report) handleEditReport(report);
+                                  }
+                                }}
+                                className={`p-4 font-medium ${statsPeriod === 'DAILY' ? 'text-blue-400 cursor-pointer hover:underline' : ''}`}
+                              >
+                                {s.period}
+                              </td>
                               <td className="p-4 text-right font-bold text-blue-400">{s.amount.toLocaleString()}원</td>
                               <td className="p-4 text-right text-white/60">{s.count.toLocaleString()}건</td>
                               {statsPeriod === 'DAILY' && (
@@ -548,10 +605,10 @@ const App: React.FC = () => {
 
       {/* Tab Bar Mobile */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 glass border-t border-white/10 h-20 px-6 flex items-center justify-around z-50">
-        <TabBtn icon={HomeIcon} label="홈" active={view === 'HOME'} onClick={() => setView('HOME')} />
+        <TabBtn icon={HomeIcon} label="홈" active={view === 'HOME'} onClick={() => { setEditingReportId(null); setView('HOME'); }} />
         <TabBtn icon={PlusCircle} label="기록" active={view === 'INPUT'} onClick={() => setView('INPUT')} />
-        <TabBtn icon={BarChart3} label="통계" active={view === 'STATS'} onClick={() => setView('STATS')} />
-        <TabBtn icon={SettingsIcon} label="설정" active={view === 'SETTINGS'} onClick={() => setView('SETTINGS')} />
+        <TabBtn icon={BarChart3} label="통계" active={view === 'STATS'} onClick={() => { setEditingReportId(null); setView('STATS'); }} />
+        <TabBtn icon={SettingsIcon} label="설정" active={view === 'SETTINGS'} onClick={() => { setEditingReportId(null); setView('SETTINGS'); }} />
       </nav>
     </div>
   );
