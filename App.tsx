@@ -59,6 +59,7 @@ const App: React.FC = () => {
   
   const [loading, setLoading] = useState(true);
   const [isScanning, setIsScanning] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
 
   // --- 초강력 데이터 복구 파서 (구조 결함 방어) ---
   const resilientParse = useCallback((rawData: any, sourceName: string): DailyReport[] => {
@@ -70,24 +71,21 @@ const App: React.FC = () => {
       try {
         if (!item || typeof item !== 'object') return;
         
-        // 날짜 파싱 및 유효성 검사
         const rawDate = item.date || item.dt || item.d || item.s_date || item.sale_date || item.created_at || item.timestamp || item.day;
         if (!rawDate) return;
 
         let formattedDate: string;
         try {
           const d = new Date(rawDate);
-          if (isNaN(d.getTime())) return; // 유효하지 않은 날짜 제외
+          if (isNaN(d.getTime())) return; 
           formattedDate = d.toISOString().split('T')[0];
         } catch { return; }
 
-        // 금액 및 건수 보정
         const rawAmount = Number(item.totalAmount ?? item.amount ?? item.amt ?? item.sum ?? 0);
         const rawCount = Number(item.totalCount ?? item.count ?? item.cnt ?? 0);
         const finalAmount = isFinite(rawAmount) ? rawAmount : 0;
         const finalCount = isFinite(rawCount) ? rawCount : 0;
 
-        // 플랫폼 매핑
         let rawPlatform = (item.platform || item.plat || item.type || 'STORE').toString().toUpperCase();
         if (rawPlatform.includes('BAEMIN') || rawPlatform.includes('배달')) rawPlatform = 'BAEMIN';
         else if (rawPlatform.includes('COUPANG') || rawPlatform.includes('쿠팡')) rawPlatform = 'COUPANG';
@@ -95,7 +93,6 @@ const App: React.FC = () => {
         else if (rawPlatform.includes('NAVER') || rawPlatform.includes('네이버')) rawPlatform = 'NAVER';
         else rawPlatform = 'STORE';
 
-        // 메뉴 데이터 보정 (배열 보장 - 먹통의 핵심 원인 해결)
         const rawMenuSales = item.menuSales || item.menus || (item.entries ? item.entries[0]?.menuSales : []) || [];
         const safeMenuSales: MenuSale[] = Array.isArray(rawMenuSales) ? rawMenuSales.map((m: any) => ({
           menuName: String(m.menuName || m.name || '알 수 없는 메뉴'),
@@ -103,7 +100,6 @@ const App: React.FC = () => {
           amount: Number(m.amount || m.price || 0)
         })) : [];
 
-        // v26 표준 구조로 변환하여 삽입
         results.push({
           id: item.id || generateId(),
           date: formattedDate,
@@ -208,9 +204,18 @@ const App: React.FC = () => {
     return { curMonthSales, prevMonthSales };
   }, [reports]);
 
-  // --- 통계 엔진 (안전성 강화) ---
+  // --- 통계 엔진 (검색 기능 추가) ---
   const [statsPeriod, setStatsPeriod] = useState<StatsPeriod>('DAILY');
   const [statsViewType, setStatsViewType] = useState<'LIST' | 'CHART'>('LIST');
+
+  const filteredReports = useMemo(() => {
+    if (!searchTerm) return reports;
+    const lowerSearch = searchTerm.toLowerCase();
+    return reports.filter(r => 
+      (r.memo && r.memo.toLowerCase().includes(lowerSearch)) || 
+      r.date.includes(searchTerm)
+    );
+  }, [reports, searchTerm]);
 
   const getPeriodKey = (dateStr: string, period: StatsPeriod) => {
     const d = new Date(dateStr);
@@ -228,25 +233,26 @@ const App: React.FC = () => {
   };
 
   const groupedStats = useMemo(() => {
-    const groups = new Map<string, { amount: number, count: number }>();
-    reports.forEach(r => {
+    const groups = new Map<string, { amount: number, count: number, memos: string[] }>();
+    filteredReports.forEach(r => {
       const key = getPeriodKey(r.date, statsPeriod);
-      const cur = groups.get(key) || { amount: 0, count: 0 };
+      const cur = groups.get(key) || { amount: 0, count: 0, memos: [] };
       groups.set(key, { 
         amount: cur.amount + (Number(r.totalAmount) || 0), 
-        count: cur.count + (Number(r.totalCount) || 0) 
+        count: cur.count + (Number(r.totalCount) || 0),
+        memos: r.memo ? [...cur.memos, r.memo] : cur.memos
       });
     });
     return Array.from(groups.entries())
       .map(([period, data]) => ({ period, ...data }))
       .sort((a, b) => b.period.localeCompare(a.period));
-  }, [reports, statsPeriod]);
+  }, [filteredReports, statsPeriod]);
 
   const detailedAggregates = useMemo(() => {
     const platformMap = new Map<PlatformType, { amount: number, count: number }>();
     const menuMap = new Map<string, { amount: number, count: number }>();
     
-    reports.forEach(r => {
+    filteredReports.forEach(r => {
       if (!r.entries || !Array.isArray(r.entries)) return;
       r.entries.forEach(e => {
         const plat = e.platform || 'STORE';
@@ -272,7 +278,7 @@ const App: React.FC = () => {
       platforms: Array.from(platformMap.entries()).sort((a, b) => b[1].amount - a[1].amount),
       menus: Array.from(menuMap.entries()).sort((a, b) => b[1].amount - a[1].amount)
     };
-  }, [reports]);
+  }, [filteredReports]);
 
   const finalizeDailySettlement = () => {
     if (draftEntries.length === 0) return alert("데이터가 없습니다.");
@@ -291,6 +297,7 @@ const App: React.FC = () => {
     saveReports([newReport, ...reports]);
     setDraftEntries([]);
     setDraftMemo('');
+    setDraftDate(new Date().toISOString().split('T')[0]); // 정산 후 오늘 날짜로 리셋
     setView('HOME');
     alert("오늘 장부가 마감되었습니다.");
   };
@@ -414,6 +421,18 @@ const App: React.FC = () => {
                 </div>
               </header>
 
+              {/* 메모 검색바 추가 */}
+              <div className="relative">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-white/20" />
+                <input 
+                  type="text" 
+                  placeholder="메모 내용 또는 날짜로 검색..." 
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full pl-11 py-3 text-sm"
+                />
+              </div>
+
               <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
                 {(['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'] as StatsPeriod[]).map(p => (
                   <button key={p} onClick={() => setStatsPeriod(p)} className={`px-5 py-2.5 rounded-full text-xs font-bold transition-all ${statsPeriod === p ? 'bg-blue-600 text-white' : 'glass text-white/40'}`}>
@@ -429,12 +448,29 @@ const App: React.FC = () => {
                     <div className="glass apple-card overflow-hidden">
                       <table className="w-full text-sm">
                         <thead className="bg-white/5 border-b border-white/5">
-                          <tr><th className="p-4 text-left text-white/40">분류 기간</th><th className="p-4 text-right text-white/40">총 매출액</th><th className="p-4 text-right text-white/40">주문수</th></tr>
+                          <tr>
+                            <th className="p-4 text-left text-white/40">분류 기간</th>
+                            <th className="p-4 text-right text-white/40">총 매출액</th>
+                            <th className="p-4 text-right text-white/40">주문수</th>
+                            {statsPeriod === 'DAILY' && <th className="p-4 text-left text-white/40">메모</th>}
+                          </tr>
                         </thead>
                         <tbody className="divide-y divide-white/5">
                           {groupedStats.map(s => (
-                            <tr key={s.period} className="hover:bg-white/5"><td className="p-4 font-medium">{s.period}</td><td className="p-4 text-right font-bold text-blue-400">{s.amount.toLocaleString()}원</td><td className="p-4 text-right text-white/60">{s.count.toLocaleString()}건</td></tr>
+                            <tr key={s.period} className="hover:bg-white/5">
+                              <td className="p-4 font-medium">{s.period}</td>
+                              <td className="p-4 text-right font-bold text-blue-400">{s.amount.toLocaleString()}원</td>
+                              <td className="p-4 text-right text-white/60">{s.count.toLocaleString()}건</td>
+                              {statsPeriod === 'DAILY' && (
+                                <td className="p-4 text-left text-xs text-white/40 italic max-w-[200px] truncate">
+                                  {s.memos.join(', ')}
+                                </td>
+                              )}
+                            </tr>
                           ))}
+                          {groupedStats.length === 0 && (
+                            <tr><td colSpan={statsPeriod === 'DAILY' ? 4 : 3} className="p-10 text-center text-white/20 italic">검색 결과가 없습니다.</td></tr>
+                          )}
                         </tbody>
                       </table>
                     </div>
