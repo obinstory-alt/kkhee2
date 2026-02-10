@@ -171,6 +171,8 @@ const App: React.FC = () => {
           const parsed = JSON.parse(savedDraft);
           setDraftEntries(parsed.entries || []);
           setDraftMemo(parsed.memo || '');
+          // '항상 현재일' 요구사항에 맞춰 로드 시에도 기본값 보정 로직을 태울 수 있으나 
+          // 작성 중인 초안의 날짜를 보존하기 위해 초기 로드 시만 허용
           setDraftDate(parsed.date || new Date().toISOString().split('T')[0]);
         }
         scanAndConsolidate();
@@ -199,6 +201,14 @@ const App: React.FC = () => {
     setDraftDate(new Date().toISOString().split('T')[0]);
     setEditingReportId(null);
     setView('HOME');
+  };
+
+  const startNewRecording = () => {
+    setEditingReportId(null);
+    setDraftEntries([]);
+    setDraftMemo('');
+    setDraftDate(new Date().toISOString().split('T')[0]);
+    setView('INPUT');
   };
 
   // --- Home Metrics (안전한 계산) ---
@@ -372,7 +382,12 @@ const App: React.FC = () => {
         </div>
         <div className="flex-1 space-y-1">
           <NavBtn icon={HomeIcon} label="홈" active={view === 'HOME'} onClick={() => { setEditingReportId(null); setView('HOME'); }} />
-          <NavBtn icon={PlusCircle} label="기록하기" active={view === 'INPUT'} onClick={() => setView('INPUT')} />
+          <NavBtn 
+            icon={PlusCircle} 
+            label="기록하기" 
+            active={view === 'INPUT'} 
+            onClick={startNewRecording} 
+          />
           <NavBtn icon={BarChart3} label="통계 분석" active={view === 'STATS'} onClick={() => { setEditingReportId(null); setView('STATS'); }} />
           <NavBtn icon={SettingsIcon} label="설정" active={view === 'SETTINGS'} onClick={() => { setEditingReportId(null); setView('SETTINGS'); }} />
         </div>
@@ -606,7 +621,7 @@ const App: React.FC = () => {
       {/* Tab Bar Mobile */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 glass border-t border-white/10 h-20 px-6 flex items-center justify-around z-50">
         <TabBtn icon={HomeIcon} label="홈" active={view === 'HOME'} onClick={() => { setEditingReportId(null); setView('HOME'); }} />
-        <TabBtn icon={PlusCircle} label="기록" active={view === 'INPUT'} onClick={() => setView('INPUT')} />
+        <TabBtn icon={PlusCircle} label="기록" active={view === 'INPUT'} onClick={startNewRecording} />
         <TabBtn icon={BarChart3} label="통계" active={view === 'STATS'} onClick={() => { setEditingReportId(null); setView('STATS'); }} />
         <TabBtn icon={SettingsIcon} label="설정" active={view === 'SETTINGS'} onClick={() => { setEditingReportId(null); setView('SETTINGS'); }} />
       </nav>
